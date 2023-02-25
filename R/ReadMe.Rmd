@@ -1,0 +1,346 @@
+---
+title: "Runbook"
+author: "Johann Seidl"
+date: "2023-01-01"
+output: pdf_document
+---
+
+Diese Dokument erklärt die grundlegenden Funktionen, welche zur Berechnung und Ermittlung der Ergebnisse für die Masterarbeit "Modellierung von Zinsstrukturkurven: Von klassischen Methoden bis zu Autoencodern" genutzt wurden. Teile des Quellcodes stammen von dem Package Termstr von Ferstl und Hayden (Robert Ferstl and Josef Hayden. Zero-coupon yield curve estimation with the package termstrc. Journal of Statistical Software, 36(1):1--34, 2010). Auch die zugrundeliegende Datenstruktur wird übernommen.
+
+## Voraussetzungen
+
+Um alle folgenden Funktionen ausführen zu können, müssen relevante Packages installiert werden. Dazu zählen *lmtest*, *Rcpp*, *sandwich*, *urca*, *lubridate*, *rgl*, *readr*, *anytime*, *bizdays*, *RQuantLib*, *timeDate*, *dplyr*, *splines* und *Rfast*. Die Datei .... R muss vollständig ausgeführt sein.
+
+```{r}
+#Run Datei
+library(lmtest);library(Rcpp);library(sandwich);library(urca);library(lubridate);library(rgl);library(readr);library(anytime);library(bizdays);library(RQuantLib);library(timeDate);library(dplyr);library(openxlsx);library(splines);library(Rfast)
+source("~Termstr Package combined.R")
+sourceCpp("~objfcts.cpp")
+```
+
+## Datenstruktur
+
+Um die Datenstruktur zur verstehen, sei auf das Journal von Ferstl und Hayden (Kapitel 3) verwiesen. Zusätzlich wurde zu der bestehenden Stuktur der Eintrag "Settlement Day" hinzugefügt. Der Bereich Exkurs: Datenstruktur im Anhang beschreibt die Erstellung der Datenstruktur für den britischen Gilt Markt. Generell werden bestimmte generische S3-Klassen den einzelnen Variablen zugewiesen, um die Nutzung der Funktionen und die Auswertung zu vereinfachen.
+
+## Analyse der Daten
+
+Sofern eine bestehende Datenstruktur existiert (Siehe *DatasetGB.RData* in Github, um die Daten des Giltmarktes Großbritaniens vom 25.11.2002 bis 05.08.2022 zu nutzen), kann diese in das R Environment geladen werden. Das dynamische Datenset *DynDataGB* besteht aus 4978 einzelnen statischen Beobachtungen.
+
+```{r}
+load("~DatasetGB.RData")
+DynDataGB
+```
+
+Es kann separat auf die einzelnen Auswertungstage zugegriffen werden.
+
+```{r}
+DynDataGB[[100]]
+```
+
+Pro Werktag kann eine Zuordnung der Anleihen zu den einzelnen Restlaufzeitklassen erfolgen. Zusätzlich wird die durchschnittliche Kapitalbindungsdauer am jeweiligen Beobachtungstag angegeben. Die Funktion startet auch den Export des DataFrames in eine Exceldatei.
+
+```{r}
+load_quantlib_calendars(ql_calendars ="UnitedKingdom/Exchange",from = "2000-01-01",to = "2022-12-31")
+restlaufzeit <- restlaufzeitklassen(DynDataGB,"Great Britian",version = 3,SettlementCheck=FALSE)
+```
+
+## Hilfsfunktionen
+
+Einige ausgewählte Funktionen können zur besseren Verständnis des Datensatzes oder individueller Daten dienen. Die Funktion *nonworkingdays* ermittelt nach dem hinterlegten Kalender alle Arbeitstage, welche berücksichtigt werden.
+
+```{r}
+nonworkingdays(calender1="UnitedKingdom/Exchange", from1=as.Date("2002-11-01"),to1 = as.Date("2022-09-01"))
+```
+
+Um an einem bestimmten Werktag die Cashflows, Restlaufzeiten, Renditen und Kapitalbindungsdauern zu untersuchen, können die folgenden Funktionen genutzt werden.
+
+```{r}
+i = 100
+
+cashflows <- create_cashflows_matrix(DynDataGB[[i]][["Great Britian"]],include_price=TRUE)
+m <- create_maturities_matrix(DynDataGB[[i]][["Great Britian"]],include_price=TRUE, version = 3, SettlementCheck=FALSE)
+m2 <- maturities_matrix_1825(DynDataGB[[i]][["Great Britian"]],include_price=TRUE, Actual = 1, SettlementCheck=FALSE)
+renditen <- bond_yields(cashflows,m,m2,mythology = TRUE,Annulized = FALSE)
+duration_und_gewicht <- duration(cashflows,m,renditen[,2],m2,freque=2,mythology = TRUE,wmethod = "rf")
+```
+
+## Hauptfunktionen
+
+Generell kann zwischen einer statische Struktur (singuläre Betrachtung eines Werktages) und der gleichzeitigen Betrachtung mehrerer Werktage (dynamische Struktur) unterschieden werden. Beiden Versionen wird eine S3-Klasse zugewiesen, auf welche durch verschiedenste Funktionen in der Auswertung zugegriffen werden kann. Hinweis: Eine vollständige Berechnung aller Werktage kann Kapazitätsgrenzen und Laufzeitgrenzen hervorrufen. Daher wird im Folgenden bei der dynamischen Betrachtung nur auf die ersten zehn Beobachtungstage eingegangen.
+
+```{r}
+rawmodel <- DynDataGB[1:80]
+class(rawmodel) <- "dyncouponbonds"
+```
+
+Die Funktion *estim_nss* kann sowohl auf die statischen als auch dynamischen Datenstrukturen angewandt werden. Der Parameter *method* unterscheidet die verschiedenen Methoden der Exponentialfamilie. Alle anderen Parameter werden im Anhang erklärt.
+
+```{r}
+ns_res <- estim_nss(rawmodel[[1]], c("Great Britian"), method = "ns", tauconstr = list(c(0.2,25,0.5)),version = 3,SettlementCheck = FALSE,freque=2,mythology=TRUE,wmethod="else")
+summary(ns_res)
+```
+
+Ingesamt ist die resultierende Datenstruktur reichhaltig und bietet vielfältige Optionen.
+
+Durch die Funktion *plot* können sowohl die Diskontkurve, die Forwardkurve als auch die Zinsstrukturkurve dargestellt werden.
+
+```{r}
+## Discount curve
+plot(ns_res$discount)
+
+## Forward Curve
+plot(ns_res$forward)
+
+## Spot Curve (Zero-coupon yield curve)
+plot(ns_res$spot)
+```
+
+Renditenfehler und Preisfehler können ebenfalls granular dargestellt werden. Die Auswertung erfolgt pro Anleihe am jeweiligen Auswertungstag.
+
+```{r}
+plot(ns_res,errors="yield")
+plot(ns_res,errors="price")
+```
+
+Durch die Formulierung von Optimierungsproblemen mit Hilfe eines Grid-Search Algorithmus, kann die Parametersuche von tau1 (- und tau2, sofern Svensson oder adjustiertes Svensson betrachtet werden -) graphisch dargestellt werden.
+
+```{r}
+plot(ns_res[["spsearch"]][["Great Britian"]],main="Great Britian")
+```
+
+Im Unterschied zu den Modellen der Exponentialfamilie, bekommen die Methoden von McCulloch und Steeley eine andere S3-Klasse zugewiesen. Analog zur obigen Beschreibung unterscheiden sich die vorhandenen Datenstrukturen der Ergebnisse leicht.
+
+```{r}
+mcculloch_res <- estim_cs_mc(DynDataGB[[1]], c("Great Britian"), version = 3)
+summary(mcculloch_res)
+```
+
+Beispielsweise werden bei der graphischen Darstellung der Spot-Rates von McCulloch zusätzlich die Knotenpunkte und 95% Konfidenzintervalle mit ausgegeben.
+
+```{r}
+plot(mcculloch_res)
+```
+
+Sofern eine Anleihe als Ausreißer klassifiziert wurde, kann mittels der Funktion *rm_bond* die Anleihe aus dem Datensatz entfernt werden und die Berechnung erneut gestartet werden.
+
+```{r}
+cs_res2 <- estim_cs_mc(rm_bond(DynDataGB[[1]], c("Great Britian"),c("GB0003270005")),c("Great Britian"), matrange=c(0,10),version = 3)
+summary(cs_res2)
+```
+
+## Dynamisch
+
+Sollen mehrere Werktage betrachtet werden, können die gleichen Funktionen genutzt werden. Entscheidend ist der unterschiedliche Input der Daten, um eine Auswertung für mehrere Werktage zu starten. Durch die Zuweisung einer S3-Struktur zum Ergebnis, kann erneut wieder verschiedene Auswertungen zugegriffen werden.
+
+```{r}
+asv_results <- estim_nss(rawmodel, c("Great Britian"),matrange="all", method = "asv", tauconstr = list(c(0.25, 25.25, 0.75)), optimtype = "allglobal",version = 3, SettlementCheck = FALSE,wmethod="rf",mythology=FALSE,Annulized =FALSE,Actual = 0,freque=2)
+summary(asv_results)
+```
+
+Beispielsweise können die Spot-Rates in einer 3-D Grafik dargestellt werden.
+
+```{r}
+plot(asv_results)
+```
+
+Die Faktoren der Modelle der Exponentialfamilie lassen sich in verschiedene Erscheinungsformen der Zinsstrukturkurve aufteilen. Die Funktion *fcontrib* ermöglicht die Visualisierung der Faktoren.
+
+```{r}
+fcontrib(param(asv_results), index = 10, method="asv")
+```
+
+Die Funktion *summary* angewandt auf die S3-Klasse *dyntermstrc_nss* zeigt die verschiedenste Werte von Fehlermaßen über den Betrachtungszeitraum.
+
+```{r}
+mc_results <- estim_cs_mc(rawmodel, c("Great Britian"),version = 3, SettlementCheck = FALSE,wmethod="rf",mythology=FALSE,Annulized = FALSE,Actual = 0)
+summary(mc_results)
+```
+
+```{r}
+regular_results <- estim_cs(rawmodel, c("Great Britian"),version = 3, SettlementCheck = FALSE,wmethod="rf",mythology=FALSE,Annulized = FALSE,Actual = 0,setdf=9)
+summary(regular_results)
+```
+
+Die Bewertungskriterien können mit Hilfe der Funktion *exportquality* exportiert und durch die Funktion Plot und Auswahl des Fehlers graphisch dargestellt werden.
+
+```{r}
+#Exports File to Plot the quality of the estimation
+regular_statvalues <- exportquality(regular_results,rawmodel,c("Great Britian"))
+plot(regular_statvalues, ctype = "RMSE")
+```
+
+Auch können die freien Variablen der Exponentialfamilie visualisiert und übersichtsweise zusammengefasst werden.
+
+```{r}
+parameter_result <- param(asv_results)
+plot(param(asv_results))
+summary(param(asv_results))
+```
+
+# Fama Bliss
+
+Ergebnisse der Fama-Bliss Methode können durch die Funktion *fama_bliss* nachvollzogen werden. Die Funktion bietet neben der Einstellung der Zinsberechnungsmethode auch die Variante, eine datensparsame und informationsreichere Version zu rechnen. Der Unterschied der beiden Varianten besteht darin, dass mit *Memorysaver = FALSE* nur die Spot-Rates zu den Fälligkeitsdaten der Anleihen ermittelt werden. Sofern die Variable *TRUE* ist, wird im Abstand von 0.01 Jahren die gesamte Kurve zum jeweiligen Betrachtungstag ermittelt.
+
+```{r}
+group <- c("Great Britian")
+fama_res <- fama_bliss(DynDataGB,group,version=3,Memorysaver = FALSE)
+```
+
+In der Anwendung der Fama-Bliss Methode sind keine Filter implementiert.
+
+# LOOCV
+
+Die Out-of-Sample Auswertung kann analog zur In-Sample Methode mit der Funktion *looc* aufgerufen werden. Derzeit werden 1/20 der Daten zur Modellierung der Out-of-Sample Menge genutzt.Die Funktion *looc* unterscheidet die klassischen Methoden. Es muss der konkrete Teilbereich angegeben werden.
+
+```{r}
+subgroup <- "Exponential"
+set.seed(11)
+loocv_result <- looc(rawmodel,subgroup,"Great Britian",tauconstr = list(c(0.2, 25, 0.1)),method = "ns",version = 3)
+loocv_result
+```
+
+Im Unterschied zur In-Sample Methode werden aufgrund von Speicherplatzoptimierung und Laufzeitreduzierung nicht alle Ergebnisse gespeichert. Neben beobachteten Preisen, theoretischen Preisen, beobachteten Renditen und theoretischen Renditen wird die Kapitalbindungsdauer des jeweiligen Out-of-Sample Bonds gespeichert. Pro betrachteten Werktag wird ein Listeneintrag erstellt. Dem Ergebnis wird die S3-Klasse *dynlooc* zugeordnet, auf der mehrere weitere Funktionen aufbauen.
+
+Die Funktion *exportqualitylooc* ermöglicht eine schnelle und detaillierte Auswertung der Daten. Zusätzlich wird ein Excel-File durch die Funktion erstellt.
+
+```{r}
+result_loocv <- exportqualitylooc(loocv_result,DynDataGB,"Great Britian")
+```
+
+Die Variable *result_loocv* gehört zur S3-Klasse *exportqual*. Auf diese Klasse kann erneut die Funktion *plot* angewandt werden, um eine graphische Darstellung zu ermöglichen.
+
+```{r}
+plot(result_loocv, ctype = "wRMSE")
+```
+
+# Hauptkomponentenanalyse
+
+Es besteht die Möglichkeit nach Modellierung die Spot-Rates von bestimmten Zeitpunkt über einen bestimmten Beobachtungszeitpunkt zu extrahieren. Range gibt dabei die Zeitpunkte in Jahren an. Diese kann zum Beispiel zum Vergleich für die PCA genutzt werden.
+
+```{r}
+final_model <- fama_res 
+model_spotrate <- extractingyields(final_model,"Great Britian",range=c(0.25,0.5,1,2,3,5,7,10,15,25))
+```
+
+Aufgrund der Korrelation der einzelnen Spot-Rates wird die Hauptkomponentenanalyse auf die Inkremente angewandt.
+
+```{r}
+result_pca <- princomp(model_spotrate)
+```
+
+Der Anteil der Totalvariation der Hauptkomponenten kann durch die Funktion *pve* dargestellt werden. Die Variable *limitpca* gibt an, wie viele groß die Summe der Totalvariation mindestens sein muss. Die Funktion *pve* gibt die entsprechenden Hauptkomponenten wieder.
+
+```{r}
+pve(result_pca,cumulative=TRUE,limitpca = 0.95)
+```
+
+Die Ladungsvektoren der Hauptkomponentenanaalyse können mittels der Funktion *plot.prcomp* dargestellt werden. Die Variable *pcanumber* gibt die Anzahl der zu darstellenden Hauptkomponenten an.
+
+```{r}
+plot.prcomp(result_pca,pcanumber = "3")
+```
+
+Möchte man nun die Ergebnisse der Hauptkomponentenanalyse mit den tatsächlichen Spot-Rates vergleichen, kann die Funktion *plotyields* genutzt werden. Um einen Vergleich zu ermöglichen, muss jedoch das Ergebnis der Hauptkomponentenanaylse, welches in Form von Inkrementen formuliert ist, wieder in seine ursprüngliche Skala transformiert werden.
+
+```{r}
+newyieldsforpca<-datarebuildpca(result_pca,model_spotrate,pcanumber=3)
+plotyields(newyieldsforpca,model_spotrate,Multiple=FALSE,cplot="PCA",range=c(0.25,0.5,1,2,3,5,7,10,15,30))
+```
+
+Die Funktion *plotyields* ermöglicht neben der gemeinsamen Darstellung von bis zu fünf verschiedenen Spot-Rates, die Darstellung des Modells oder der Hauptkomponentenanalyse separat (siehe dazu Übersicht: Parameter)
+
+## Erstellung der Spot-Rates für die Neuronalen Netze
+
+Analog zur Masterarbeit werden Fama-Bliss Spot-Rates verwendet, um das Neuronale Netz zu trainieren. Vorab müssen die erzeugten Spot-Rates in ein entsprechendes Format umgewandelt werden. Dies übernimmt die Funktion *fama_res_dyn_fun*. Der Parameter *inputnodes* gibt die gewünschte Anzahl an Knoten für das Modell an.
+
+```{r}
+saver <- t(fama_res_dyn_fun(fama_res,inputnodes=30))
+saver <- as.data.frame(saver)
+write.csv(saver,"exportFamaBliss_final30.csv",row.names = FALSE)
+saver2 <- t(fama_res_dyn_fun(fama_res,Yields=TRUE,inputnodes=30))
+saver2 <- as.data.frame(saver2)
+write.csv(saver2,"exportFamaBlissyieldsonly30.csv",row.names = FALSE)
+saver3 <- t(fama_res_dyn_fun(fama_res,zeit=TRUE,inputnodes=30))
+saver3 <- as.data.frame(saver3)
+write.csv(saver3,"exportFamaBlisstimeonly30.csv",row.names = FALSE)
+```
+
+Weiterhin werden aus Sicht des Beobachtungstages alle relevanten Laufzeiten in Jahren benötigt, um den Barwert der Anleihe zu berechnen. Hierzu werden die Dateien *mattimes30.csv* und *rownum30.csv* benötigt.
+
+```{r}
+inputnodes  = 30
+num_rows <- c(0)
+timematrixall <- matrix(0,nrow = 1,ncol = inputnodes)
+for (i in 1:length(DynDataGB)){
+  tras <- newdaycount(DynDataGB[[i]][[group]]$TODAY,sort(unique(DynDataGB[[i]][[group]]$CASHFLOWS$DATE)),version=3)
+  num_rows[i] <- ceiling(length(tras)/inputnodes)
+  tras <- t(matrix(tras,nrow=inputnodes))
+  timematrixall <- rbind(timematrixall,tras)
+}
+timematrixall <- timematrixall[-1,]
+
+write.csv(timematrixall,"mattimes30.csv",row.names = FALSE)
+write.csv(num_rows,"rownum30.csv",row.names = FALSE)
+```
+
+Nachdem der Autoencoder trainiert ist und die Resultate in der entsprechenden Datei gespeichert wurden, können Sie in R eingelesen werden und ausgewertet werden. Die theoretischen Preise und Renditen der Anleihen werden mittels der Funktion *analysis_aepython* berechnet. Die Funktion *valuesfinal_aepython* berechnet die verschiedenen Fehlerstatistiken. Eine Trennung zwischen In-Sample und Out-of-Sample Ergebnissen muss nachträglich erfolgen.
+
+```{r}
+library(readxl)
+export_spotrates <- read_excel("~Python/export_yields5.xlsx")
+
+### Laufzeit über 10 Stunden
+result_aespotrates <- analysis_aepython(export_spotrates,DynDataGB,c("Great Britian"),timematrixall,num_rows,version=3,Actual=0,SettlementCheck=FALSE,Annulized=FALSE,mythology=TRUE)
+final_aepython <- valuesfinal_aepython(result_aespotrates)
+```
+
+## Übersicht Parameter
+
+Alle Parameter und Variablen werden im Excel File Parametererklärung gelistet und vollständig erklärt.
+
+## Exkurs: Datenstruktur
+
+Die Erstellung der Datenstruktur bedarf mehrerer Schritte. Einerseits müssen die Daten in geeigneter Form vorhanden sein und andererseits müssen Besonderheiten wie kurze oder lange Zinsperioden berücksichtigt werden. Die Excel Datei *Conventional Gilts 2002-2022 einlesen* dient als Grundlage. Die Dateien *Number of Obs* und *NA + Ex Dividend Date* sind Hilfsdateien, um verschiedene Prüfchecks nach dem Einlesen der Daten durchzuführen. Zuerst muss der entsprechende Kalender geladen und das Settlement Delay angegeben werden.
+
+```{r}
+load_quantlib_calendars(ql_calendars ="UnitedKingdom/Exchange",from = "2000-01-01",to = "2022-12-31")
+delayday <- 1
+country = "Great Britian"
+```
+
+```{r}
+Conventional_Gilts_2002_2022 <- read_delim("~Conventional Gilts 2002-2022 einlesen.csv", delim = ";", escape_double = FALSE, col_types = cols(`Clean Price` = col_character(), `Dirty Price` = col_character(), `Dividend Date 1 Tag` = col_character(), `Dividend Date 1 Monat` = col_character(), `Dividend Date 2 Tag` = col_character(), `Dividend Date 2 Monat` = col_character()), na = "NA", trim_ws = TRUE)
+Number_of_Obs <- read_delim("~Number of Obs.csv", delim = ";", escape_double = FALSE, trim_ws = TRUE,show_col_types = FALSE)
+NA_Ex_Dividend_Date <- read_delim("~NA + Ex Dividend Date.csv", delim = ";", escape_double = FALSE, col_types = cols(`Clean Price` = col_character(), `Dirty Price` = col_character()), trim_ws = TRUE)
+```
+
+Nachdem die Tabellen eingelesen wurden, wird die Struktur bestehend aus *ISIN*, *MATURIYDATE*, *ISSUEDATE*, *COUPONDATE*, *PRICE*, *ACCURED*, *TODAY*, *CASHFLOW* und *SETTLEMENTDAY* erstellt. Sofern nicht alle Daten umgewandelt werden sollen, kann mittels der Codezeilen unter Zusatz eine Einschränkung vorgenommen werden.
+
+```{r}
+### Umwandeln der Daten 
+Conventional_Gilts_2002_2022 <- convertdata(Conventional_Gilts_2002_2022,NA_Ex_Dividend_Date)
+unfiltereddata <- Conventional_Gilts_2002_2022
+
+## Zusatz
+#startday <- as.Date("2011-07-18")
+#endday <- as.Date("2012-07-13")
+#searchdates <- bizseq(startday, endday, "QuantLib/UnitedKingdom/Exchange")
+#Conventional_Gilts_2002_2022 <- subset(Conventional_Gilts_2002_2022,searchdates)
+#leere_Liste <- emptylist(Conventional_Gilts_2002_2022,country)
+
+### Daten in Liste hinzufügen
+DynDataGB <- adddata(Conventional_Gilts_2002_2022,country,leere_Liste,unfiltereddata)
+```
+
+Nachdem alle Daten hinzugefügt wurden, folgt die Plausibilisierung der Fakten:
+
+```{r}
+DynDataGB <- readcheck.dyncouponbonds(DynDataGB,country)
+
+obs <- numobs(DynDataGB, country)
+Number_of_Obs <- changenumobs(Number_of_Obs, searchdates)
+Number_of_Obs <- changenumobs2(Conventional_Gilts_2002_2022, Number_of_Obs)
+readcheck.dyndatanumobs(obs,Number_of_Obs)
+```
+
+Die fertige Datei wird bereits bereitgestellt, da die RunTime zur Erstellung des Datensatzes mehr als 20 Stunden beträgt.
